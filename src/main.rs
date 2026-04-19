@@ -1,5 +1,6 @@
 #![feature(iter_array_chunks)]
 
+use itertools::Itertools;
 use rustfft::{FftPlanner, num_complex::Complex};
 use std::{fs, path::Path, thread, time::Instant};
 
@@ -22,8 +23,7 @@ fn read_32_bit_stereo_pcm_wav(file: impl AsRef<Path>) -> std::io::Result<Data> {
     let (left, right) = bytes_iter
         .array_chunks::<4>()
         .map(i32::from_le_bytes)
-        .array_chunks::<2>()
-        .map(|[l, r]| (l, r))
+        .tuples::<(i32, i32)>()
         .unzip::<i32, i32, Vec<i32>, Vec<i32>>();
 
     Ok(Data {
@@ -43,10 +43,8 @@ fn write_32_bit_stereo_samples_as_pcm_wav(
         .into_iter()
         .chain(
             left.into_iter()
-                .zip(right)
-                .flat_map(|(l, r)| vec![l, r])
-                .flat_map(i32::to_le_bytes)
-                .collect::<Vec<u8>>(),
+                .interleave(right)
+                .flat_map(i32::to_le_bytes),
         )
         .collect::<Vec<u8>>();
 
