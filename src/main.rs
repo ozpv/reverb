@@ -23,7 +23,9 @@ fn read_32_bit_stereo_pcm_wav(file: impl AsRef<Path>) -> std::io::Result<Data> {
     let (left, right) = bytes_iter
         .array_chunks::<4>()
         .map(i32::from_le_bytes)
+		// (l, r), (l, r), (l, r), ...
         .tuples::<(i32, i32)>()
+		// Vec<(A,B)> to (Vec<A>, Vec<B>)
         .unzip::<i32, i32, Vec<i32>, Vec<i32>>();
 
     Ok(Data {
@@ -146,6 +148,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         NORMALIZE_TARGET_DB,
     );
 
+	// wait for left to finish if not already done
+	// and move final data back into this scope
     let left_out = handle.join().unwrap();
 
     write_32_bit_stereo_samples_as_pcm_wav(
