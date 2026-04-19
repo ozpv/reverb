@@ -25,7 +25,7 @@ fn read_32_bit_stereo_pcm_wav(file: impl AsRef<Path>) -> std::io::Result<Data> {
         .map(i32::from_le_bytes)
         // (l, r), (l, r), (l, r), ...
         .tuples::<(i32, i32)>()
-        // Vec<(l,r)> to (Vec<l>, Vec<r>)
+        // Vec<(l, r)> into (Vec<l>, Vec<r>)
         .unzip::<i32, i32, Vec<i32>, Vec<i32>>();
 
     Ok(Data {
@@ -101,6 +101,7 @@ fn finalize(signal: Vec<f64>, target_db: f64) -> Vec<i32> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let now = Instant::now();
+
     let mut impulse = read_32_bit_stereo_pcm_wav("impulse.wav")?;
     let mut impulse_response = read_32_bit_stereo_pcm_wav("impulse_response.wav")?;
 
