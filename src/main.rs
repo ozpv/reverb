@@ -1,8 +1,7 @@
 #![feature(iter_array_chunks)]
 
-use parking_lot::Mutex;
 use rustfft::{FftPlanner, num_complex::Complex};
-use std::{fs, path::Path, sync::Arc, thread, time::Instant};
+use std::{fs, path::Path, thread, time::Instant};
 
 const NORMALIZE_TARGET_DB: f64 = -1.0;
 
@@ -109,10 +108,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // next power of two because of divide and conquer algorithms
     let output_len = (impulse.left.len() + impulse_response.left.len() - 1).next_power_of_two();
 
-    let left_out = Arc::new(Mutex::new(Option::<Vec<i32>>::None));
-
-    let left_out_rc = Arc::clone(&left_out);
-
     // calculate left channel
     let handle = thread::spawn(move || {
         let mut fft_planner = FftPlanner::new();
@@ -128,12 +123,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             impulse_left_f[i] *= impulse_response_left_f[i];
         }
 
-        let left = finalize(
+        finalize(
             inverse_real_fft(impulse_left_f, &mut fft_planner, output_len),
             NORMALIZE_TARGET_DB,
-        );
-
-        *left_out_rc.lock() = Some(left);
+        )
     });
 
     // at the exact same time, calculate right channel
@@ -155,11 +148,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         NORMALIZE_TARGET_DB,
     );
 
-    // check or wait until left is done
-    handle.join().unwrap();
-
-    // extract Vec from all the layers
-    let left_out = Arc::into_inner(left_out).unwrap().into_inner().unwrap();
+    let left_out = handle.join().unwrap();
 
     write_32_bit_stereo_samples_as_pcm_wav(
         "output.wav",
