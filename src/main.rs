@@ -1,7 +1,10 @@
 #![feature(iter_array_chunks)]
 
+use parking_lot::Mutex;
 use rustfft::{FftPlanner, num_complex::Complex};
-use std::{fs, path::Path, time::Instant};
+use std::{fs, path::Path, sync::Arc, thread, time::Instant};
+
+const NORMALIZE_TARGET_DB: f64 = -1.0;
 
 struct Data {
     header: Vec<u8>,
@@ -98,8 +101,7 @@ fn finalize(signal: Vec<f64>, target_db: f64) -> Vec<i32> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-	let now = Instant::now();
-	
+    let now = Instant::now();
     let mut impulse = read_32_bit_stereo_pcm_wav("impulse.wav")?;
     let mut impulse_response = read_32_bit_stereo_pcm_wav("impulse_response.wav")?;
 
@@ -107,39 +109,66 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // next power of two because of divide and conquer algorithms
     let output_len = (impulse.left.len() + impulse_response.left.len() - 1).next_power_of_two();
 
-    impulse.left.resize(output_len, 0);
-    impulse.right.resize(output_len, 0);
+    let left_out = Arc::new(Mutex::new(Option::<Vec<i32>>::None));
 
-    impulse_response.left.resize(output_len, 0);
-    impulse_response.right.resize(output_len, 0);
+    let left_out_rc = Arc::clone(&left_out);
 
+    // calculate left channel
+    let handle = thread::spawn(move || {
+        let mut fft_planner = FftPlanner::new();
+
+        impulse.left.resize(output_len, 0);
+        impulse_response.left.resize(output_len, 0);
+
+        let mut impulse_left_f = forward_real_fft(impulse.left, &mut fft_planner, output_len);
+        let impulse_response_left_f =
+            forward_real_fft(impulse_response.left, &mut fft_planner, output_len);
+
+        for i in 0..impulse_left_f.len() {
+            impulse_left_f[i] *= impulse_response_left_f[i];
+        }
+
+        let left = finalize(
+            inverse_real_fft(impulse_left_f, &mut fft_planner, output_len),
+            NORMALIZE_TARGET_DB,
+        );
+
+        *left_out_rc.lock() = Some(left);
+    });
+
+    // at the exact same time, calculate right channel
     let mut fft_planner = FftPlanner::new();
 
-    let mut impulse_left_f = forward_real_fft(impulse.left, &mut fft_planner, output_len);
-    let mut impulse_right_f = forward_real_fft(impulse.right, &mut fft_planner, output_len);
+    impulse.right.resize(output_len, 0);
+    impulse_response.right.resize(output_len, 0);
 
-    let impulse_response_left_f =
-        forward_real_fft(impulse_response.left, &mut fft_planner, output_len);
+    let mut impulse_right_f = forward_real_fft(impulse.right, &mut fft_planner, output_len);
     let impulse_response_right_f =
         forward_real_fft(impulse_response.right, &mut fft_planner, output_len);
 
-    // assuming the same length
-    for i in 0..impulse_left_f.len() {
-        impulse_left_f[i] *= impulse_response_left_f[i];
+    for i in 0..impulse_right_f.len() {
         impulse_right_f[i] *= impulse_response_right_f[i];
     }
 
-    let left_out = inverse_real_fft(impulse_left_f, &mut fft_planner, output_len);
-    let right_out = inverse_real_fft(impulse_right_f, &mut fft_planner, output_len);
+    let right_out = finalize(
+        inverse_real_fft(impulse_right_f, &mut fft_planner, output_len),
+        NORMALIZE_TARGET_DB,
+    );
+
+    // check or wait until left is done
+    handle.join().unwrap();
+
+    // extract Vec from all the layers
+    let left_out = Arc::into_inner(left_out).unwrap().into_inner().unwrap();
 
     write_32_bit_stereo_samples_as_pcm_wav(
         "output.wav",
         impulse_response.header,
-        finalize(left_out, -0.3),
-        finalize(right_out, -0.3),
+        left_out,
+        right_out,
     )?;
-	
-	println!("{:?}", now.elapsed());
+
+    println!("{:?}", now.elapsed());
 
     Ok(())
 }
