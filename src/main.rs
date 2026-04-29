@@ -116,16 +116,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         impulse.left.resize(output_len, 0);
         impulse_response.left.resize(output_len, 0);
 
-        let mut impulse_left_f = forward_real_fft(impulse.left, &mut fft_planner, output_len);
+        let impulse_left_f = forward_real_fft(impulse.left, &mut fft_planner, output_len);
         let impulse_response_left_f =
             forward_real_fft(impulse_response.left, &mut fft_planner, output_len);
 
-        for i in 0..impulse_left_f.len() {
-            impulse_left_f[i] *= impulse_response_left_f[i];
-        }
+        let output_y = impulse_left_f
+            .into_iter()
+            .zip(impulse_response_left_f)
+            .map(|(impulse, impulse_response)| impulse * impulse_response)
+            .collect::<Vec<Complex<f64>>>();
 
         finalize(
-            inverse_real_fft(impulse_left_f, &mut fft_planner, output_len),
+            inverse_real_fft(output_y, &mut fft_planner, output_len),
             NORMALIZE_TARGET_DB,
         )
     });
@@ -136,16 +138,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     impulse.right.resize(output_len, 0);
     impulse_response.right.resize(output_len, 0);
 
-    let mut impulse_right_f = forward_real_fft(impulse.right, &mut fft_planner, output_len);
+    let impulse_right_f = forward_real_fft(impulse.right, &mut fft_planner, output_len);
     let impulse_response_right_f =
         forward_real_fft(impulse_response.right, &mut fft_planner, output_len);
 
-    for i in 0..impulse_right_f.len() {
-        impulse_right_f[i] *= impulse_response_right_f[i];
-    }
+    let output_y = impulse_right_f
+        .into_iter()
+        .zip(impulse_response_right_f)
+        .map(|(impulse, impulse_response)| impulse * impulse_response)
+        .collect::<Vec<Complex<f64>>>();
 
     let right_out = finalize(
-        inverse_real_fft(impulse_right_f, &mut fft_planner, output_len),
+        inverse_real_fft(output_y, &mut fft_planner, output_len),
         NORMALIZE_TARGET_DB,
     );
 
