@@ -12,13 +12,16 @@ struct Data {
     right: Vec<i32>,
 }
 
-fn read_32_bit_stereo_pcm_wav(file: impl AsRef<Path>) -> std::io::Result<Data> {
+fn read_32_bit_stereo_pcm_wav(file: impl AsRef<Path>) -> std::io::Result<(Data, usize)> {
     let bytes = fs::read(file)?;
-    let header_len = bytes.windows(4).position(|s| s == b"data").unwrap() + 8;
+    let data_offset = bytes.windows(4).position(|s| s == b"data").unwrap();
 
     let mut bytes_iter = bytes.into_iter();
 
-    let header = bytes_iter.by_ref().take(header_len).collect::<Vec<u8>>();
+    let header = bytes_iter
+        .by_ref()
+        .take(data_offset + 8)
+        .collect::<Vec<u8>>();
 
     let (left, right) = bytes_iter
         .array_chunks::<4>()
@@ -28,29 +31,41 @@ fn read_32_bit_stereo_pcm_wav(file: impl AsRef<Path>) -> std::io::Result<Data> {
         // Vec<(l, r)> into (Vec<l>, Vec<r>)
         .unzip::<i32, i32, Vec<i32>, Vec<i32>>();
 
-    Ok(Data {
-        header,
-        left,
-        right,
-    })
+    Ok((
+        Data {
+            header,
+            left,
+            right,
+        },
+        data_offset,
+    ))
 }
 
 fn write_32_bit_stereo_samples_as_pcm_wav(
     output_file: impl AsRef<Path>,
-    header: Vec<u8>,
+    mut header: Vec<u8>,
     left: Vec<i32>,
     right: Vec<i32>,
+    data_offset: usize,
 ) -> std::io::Result<()> {
-    let output = header
+    let mut data = left
         .into_iter()
-        .chain(
-            left.into_iter()
-                .interleave(right)
-                .flat_map(i32::to_le_bytes),
-        )
+        .interleave(right)
+        .flat_map(i32::to_le_bytes)
         .collect::<Vec<u8>>();
 
-    fs::write(output_file, output)
+    // update data length
+    header[data_offset + 4..data_offset + 8].copy_from_slice(&u32::to_le_bytes(data.len() as u32));
+
+    println!(
+        "Bytes len: {} Byte rate: {}",
+        data.len(),
+        (44_100 * 2 * 32) / 8
+    );
+
+    header.append(&mut data);
+
+    fs::write(output_file, header)
 }
 
 fn forward_real_fft(
@@ -102,8 +117,8 @@ fn finalize(signal: Vec<f64>, target_db: f64) -> Vec<i32> {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let now = Instant::now();
 
-    let mut impulse = read_32_bit_stereo_pcm_wav("impulse.wav")?;
-    let mut impulse_response = read_32_bit_stereo_pcm_wav("impulse_response.wav")?;
+    let (mut impulse, data_offset) = read_32_bit_stereo_pcm_wav("impulse.wav")?;
+    let (mut impulse_response, _) = read_32_bit_stereo_pcm_wav("impulse_response.wav")?;
 
     // assuming both channels are the same length
     // next power of two because of divide and conquer algorithms
@@ -159,9 +174,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     write_32_bit_stereo_samples_as_pcm_wav(
         "output.wav",
-        impulse_response.header,
+        impulse.header,
         left_out,
         right_out,
+        data_offset,
     )?;
 
     println!("{:?}", now.elapsed());
