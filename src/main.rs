@@ -6,13 +6,15 @@ use std::{fs, path::Path, thread, time::Instant};
 
 const NORMALIZE_TARGET_DB: f64 = -1.0;
 
+#[allow(clippy::struct_field_names)]
 struct Data {
     header: Vec<u8>,
+    data_offset: usize,
     left: Vec<i32>,
     right: Vec<i32>,
 }
 
-fn read_32_bit_stereo_pcm_wav(file: impl AsRef<Path>) -> std::io::Result<(Data, usize)> {
+fn read_32_bit_stereo_pcm_wav(file: impl AsRef<Path>) -> std::io::Result<Data> {
     let bytes = fs::read(file)?;
     let data_offset = bytes.windows(4).position(|s| s == b"data").unwrap();
 
@@ -31,14 +33,12 @@ fn read_32_bit_stereo_pcm_wav(file: impl AsRef<Path>) -> std::io::Result<(Data, 
         // Vec<(l, r)> into (Vec<l>, Vec<r>)
         .unzip::<i32, i32, Vec<i32>, Vec<i32>>();
 
-    Ok((
-        Data {
-            header,
-            left,
-            right,
-        },
+    Ok(Data {
+        header,
         data_offset,
-    ))
+        left,
+        right,
+    })
 }
 
 fn write_32_bit_stereo_samples_as_pcm_wav(
@@ -47,7 +47,7 @@ fn write_32_bit_stereo_samples_as_pcm_wav(
     left: Vec<i32>,
     right: Vec<i32>,
     data_offset: usize,
-) -> std::io::Result<()> {
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut data = left
         .into_iter()
         .interleave(right)
@@ -55,7 +55,8 @@ fn write_32_bit_stereo_samples_as_pcm_wav(
         .collect::<Vec<u8>>();
 
     // update data length
-    header[data_offset + 4..data_offset + 8].copy_from_slice(&u32::to_le_bytes(data.len() as u32));
+    header[data_offset + 4..data_offset + 8]
+        .copy_from_slice(&u32::to_le_bytes(u32::try_from(data.len())?));
 
     println!(
         "Bytes len: {} Byte rate: {}",
@@ -65,9 +66,12 @@ fn write_32_bit_stereo_samples_as_pcm_wav(
 
     header.append(&mut data);
 
-    fs::write(output_file, header)
+    fs::write(output_file, header)?;
+
+    Ok(())
 }
 
+#[inline(always)]
 fn forward_real_fft(
     signal: Vec<i32>,
     fft_planner: &mut FftPlanner<f64>,
@@ -84,6 +88,7 @@ fn forward_real_fft(
     signal
 }
 
+#[inline(always)]
 fn inverse_real_fft(
     mut signal: Vec<Complex<f64>>,
     fft_planner: &mut FftPlanner<f64>,
@@ -99,6 +104,7 @@ fn inverse_real_fft(
 }
 
 /// normalizes and casts to i32
+#[inline(always)]
 fn finalize(signal: Vec<f64>, target_db: f64) -> Vec<i32> {
     let max = signal.iter().max_by(|a, b| a.total_cmp(b)).unwrap_or(&1.0);
 
@@ -117,28 +123,28 @@ fn finalize(signal: Vec<f64>, target_db: f64) -> Vec<i32> {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let now = Instant::now();
 
-    let (mut impulse, data_offset) = read_32_bit_stereo_pcm_wav("impulse.wav")?;
-    let (mut impulse_response, _) = read_32_bit_stereo_pcm_wav("impulse_response.wav")?;
+    let mut signal = read_32_bit_stereo_pcm_wav("signal.wav")?;
+    let mut impulse_response = read_32_bit_stereo_pcm_wav("impulse_response.wav")?;
 
     // assuming both channels are the same length
     // next power of two because of divide and conquer algorithms
-    let output_len = (impulse.left.len() + impulse_response.left.len() - 1).next_power_of_two();
+    let output_len = (signal.left.len() + impulse_response.left.len() - 1).next_power_of_two();
 
     // calculate left channel
     let handle = thread::spawn(move || {
         let mut fft_planner = FftPlanner::new();
 
-        impulse.left.resize(output_len, 0);
+        signal.left.resize(output_len, 0);
         impulse_response.left.resize(output_len, 0);
 
-        let impulse_left_f = forward_real_fft(impulse.left, &mut fft_planner, output_len);
+        let impulse_left_f = forward_real_fft(signal.left, &mut fft_planner, output_len);
         let impulse_response_left_f =
             forward_real_fft(impulse_response.left, &mut fft_planner, output_len);
 
         let output_y = impulse_left_f
             .into_iter()
             .zip(impulse_response_left_f)
-            .map(|(impulse, impulse_response)| impulse * impulse_response)
+            .map(|(a, b)| a * b)
             .collect::<Vec<Complex<f64>>>();
 
         finalize(
@@ -150,17 +156,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // at the exact same time, calculate right channel
     let mut fft_planner = FftPlanner::new();
 
-    impulse.right.resize(output_len, 0);
+    signal.right.resize(output_len, 0);
     impulse_response.right.resize(output_len, 0);
 
-    let impulse_right_f = forward_real_fft(impulse.right, &mut fft_planner, output_len);
+    let impulse_right_f = forward_real_fft(signal.right, &mut fft_planner, output_len);
     let impulse_response_right_f =
         forward_real_fft(impulse_response.right, &mut fft_planner, output_len);
 
     let output_y = impulse_right_f
         .into_iter()
         .zip(impulse_response_right_f)
-        .map(|(impulse, impulse_response)| impulse * impulse_response)
+        .map(|(a, b)| a * b)
         .collect::<Vec<Complex<f64>>>();
 
     let right_out = finalize(
@@ -174,10 +180,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     write_32_bit_stereo_samples_as_pcm_wav(
         "output.wav",
-        impulse.header,
+        signal.header,
         left_out,
         right_out,
-        data_offset,
+        signal.data_offset,
     )?;
 
     println!("{:?}", now.elapsed());
